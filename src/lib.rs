@@ -101,7 +101,8 @@ use swisstable_group_query::REFERENCE_GROUP_SIZE;
 pub use crate::fxhash::FxHashFn;
 pub use crate::unhash::UnHashFn;
 
-use crate::raw_table::{ByteArray, RawIter, RawTable, RawTableMut};
+pub use crate::raw_table::ByteArray;
+use crate::raw_table::{RawIter, RawTable, RawTableMut};
 
 /// This trait provides a complete "configuration" for a hash table, i.e. it
 /// defines the key and value types, how these are encoded and what hash
@@ -809,6 +810,7 @@ mod tests {
             }
         }
 
+        impl<const L: usize> crate::raw_table::sealed::Sealed for Bytes<L> {}
         impl<const L: usize> ByteArray for Bytes<L> {
             #[inline(always)]
             fn zeroed() -> Self {
