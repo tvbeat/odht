@@ -446,18 +446,69 @@ where
 pub(crate) mod sealed {
     pub trait Sealed {}
     impl<const LEN: usize> Sealed for [u8; LEN] {}
+    impl<const LEN: usize, const COUNT: usize> Sealed for [[u8; LEN]; COUNT] {}
 }
 
 /// A trait that abstracts over different lengths of fixed size byte arrays.
 ///
 /// This trait is sealed — it cannot be implemented outside of this crate.
-/// It is implemented for all `[u8; N]` arrays via const generics.
+/// It is implemented for all `[u8; N]` arrays via const generics, and for
+/// all arrays of them, `[[u8; M]; N]`. Such an array holds the same bytes
+/// as a `[u8; M * N]`, a type that cannot be named when `M` or `N` is
+/// generic.
 pub trait ByteArray:
     sealed::Sealed + Sized + Copy + Eq + Clone + PartialEq + fmt::Debug + 'static
 {
     fn zeroed() -> Self;
     fn as_slice(&self) -> &[u8];
-    fn equals(&self, other: &Self) -> bool;
+
+    // This custom implementation of comparing the fixed size arrays
+    // seems make a big difference for performance (at least for
+    // 16+ byte keys)
+    #[inline]
+    fn equals(&self, other: &Self) -> bool {
+        // Most branches here are optimized away at compile time
+        // because they depend on values known at compile time.
+
+        const USIZE: usize = size_of::<usize>();
+
+        // Special case a few cases we care about
+        if size_of::<Self>() == USIZE {
+            return read_usize(self.as_slice(), 0) == read_usize(other.as_slice(), 0);
+        }
+
+        if size_of::<Self>() == USIZE * 2 {
+            return read_usize(self.as_slice(), 0) == read_usize(other.as_slice(), 0)
+                && read_usize(self.as_slice(), 1) == read_usize(other.as_slice(), 1);
+        }
+
+        if size_of::<Self>() == USIZE * 3 {
+            return read_usize(self.as_slice(), 0) == read_usize(other.as_slice(), 0)
+                && read_usize(self.as_slice(), 1) == read_usize(other.as_slice(), 1)
+                && read_usize(self.as_slice(), 2) == read_usize(other.as_slice(), 2);
+        }
+
+        if size_of::<Self>() == USIZE * 4 {
+            return read_usize(self.as_slice(), 0) == read_usize(other.as_slice(), 0)
+                && read_usize(self.as_slice(), 1) == read_usize(other.as_slice(), 1)
+                && read_usize(self.as_slice(), 2) == read_usize(other.as_slice(), 2)
+                && read_usize(self.as_slice(), 3) == read_usize(other.as_slice(), 3);
+        }
+
+        // fallback
+        return self.as_slice() == other.as_slice();
+
+        #[inline(always)]
+        fn read_usize(bytes: &[u8], index: usize) -> usize {
+            const STRIDE: usize = size_of::<usize>();
+            usize::from_le_bytes(
+                bytes[STRIDE * index..STRIDE * (index + 1)]
+                    .try_into()
+                    .unwrap(),
+            )
+        }
+    }
+
     fn is_all_zeros(&self) -> bool {
         self.as_slice().iter().all(|b| *b == 0)
     }
@@ -473,52 +524,17 @@ impl<const LEN: usize> ByteArray for [u8; LEN] {
     fn as_slice(&self) -> &[u8] {
         &self[..]
     }
+}
 
-    // This custom implementation of comparing the fixed size arrays
-    // seems make a big difference for performance (at least for
-    // 16+ byte keys)
-    #[inline]
-    fn equals(&self, other: &Self) -> bool {
-        // Most branches here are optimized away at compile time
-        // because they depend on values known at compile time.
+impl<const LEN: usize, const COUNT: usize> ByteArray for [[u8; LEN]; COUNT] {
+    #[inline(always)]
+    fn zeroed() -> Self {
+        [[0u8; LEN]; COUNT]
+    }
 
-        const USIZE: usize = size_of::<usize>();
-
-        // Special case a few cases we care about
-        if size_of::<Self>() == USIZE {
-            return read_usize(&self[..], 0) == read_usize(&other[..], 0);
-        }
-
-        if size_of::<Self>() == USIZE * 2 {
-            return read_usize(&self[..], 0) == read_usize(&other[..], 0)
-                && read_usize(&self[..], 1) == read_usize(&other[..], 1);
-        }
-
-        if size_of::<Self>() == USIZE * 3 {
-            return read_usize(&self[..], 0) == read_usize(&other[..], 0)
-                && read_usize(&self[..], 1) == read_usize(&other[..], 1)
-                && read_usize(&self[..], 2) == read_usize(&other[..], 2);
-        }
-
-        if size_of::<Self>() == USIZE * 4 {
-            return read_usize(&self[..], 0) == read_usize(&other[..], 0)
-                && read_usize(&self[..], 1) == read_usize(&other[..], 1)
-                && read_usize(&self[..], 2) == read_usize(&other[..], 2)
-                && read_usize(&self[..], 3) == read_usize(&other[..], 3);
-        }
-
-        // fallback
-        return &self[..] == &other[..];
-
-        #[inline(always)]
-        fn read_usize(bytes: &[u8], index: usize) -> usize {
-            const STRIDE: usize = size_of::<usize>();
-            usize::from_le_bytes(
-                bytes[STRIDE * index..STRIDE * (index + 1)]
-                    .try_into()
-                    .unwrap(),
-            )
-        }
+    #[inline(always)]
+    fn as_slice(&self) -> &[u8] {
+        self.as_flattened()
     }
 }
 
@@ -664,5 +680,18 @@ mod tests {
         test_with_group_size::<4>();
         test_with_group_size::<8>();
         test_with_group_size::<16>();
+    }
+
+    #[test]
+    fn nested_byte_array_is_its_flat_bytes() {
+        let flat = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        let nested = [[1u8, 2, 3, 4], [5, 6, 7, 8]];
+        let other = [[1u8, 2, 3, 4], [5, 6, 7, 9]];
+
+        assert_eq!(ByteArray::as_slice(&nested), ByteArray::as_slice(&flat));
+        assert!(nested.equals(&nested));
+        assert!(!nested.equals(&other));
+        assert!(!nested.is_all_zeros());
+        assert!(<[[u8; 4]; 2]>::zeroed().is_all_zeros());
     }
 }
