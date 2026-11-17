@@ -709,6 +709,52 @@ mod tests {
         }
     }
 
+    /// Like `TestConfig`, but encodes a key as two arrays of two bytes each.
+    enum NestedKeyConfig {}
+
+    impl Config for NestedKeyConfig {
+        type EncodedKey = [[u8; 2]; 2];
+        type EncodedValue = [u8; 4];
+
+        type Key = u32;
+        type Value = u32;
+
+        type H = FxHashFn;
+
+        fn encode_key(k: &Self::Key) -> Self::EncodedKey {
+            let [a, b, c, d] = k.to_le_bytes();
+            [[a, b], [c, d]]
+        }
+
+        fn encode_value(v: &Self::Value) -> Self::EncodedValue {
+            v.to_le_bytes()
+        }
+
+        fn decode_key(k: &Self::EncodedKey) -> Self::Key {
+            let [[a, b], [c, d]] = *k;
+            u32::from_le_bytes([a, b, c, d])
+        }
+
+        fn decode_value(v: &Self::EncodedValue) -> Self::Value {
+            u32::from_le_bytes(*v)
+        }
+    }
+
+    #[test]
+    fn nested_key_arrays_give_the_same_table_as_flat_ones() {
+        for count in 0..33 {
+            let items = make_test_items(count);
+            let flat = HashTableOwned::<TestConfig>::from_iterator(items.clone(), 95);
+            let nested = HashTableOwned::<NestedKeyConfig>::from_iterator(items.clone(), 95);
+
+            assert_eq!(nested.raw_bytes(), flat.raw_bytes());
+
+            for (key, value) in items.iter() {
+                assert_eq!(nested.get(key), Some(*value));
+            }
+        }
+    }
+
     #[test]
     fn load_factor_and_item_count() {
         assert_eq!(
